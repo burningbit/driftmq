@@ -1,6 +1,22 @@
 defmodule DriftMQ.SocketHandler do
     @behaviour :cowboy_websocket
 
+    @connect 0x10
+    @connack 0x20
+    @publish 0x30
+    @puback 0x40
+    @pubrec 0x50
+    @pubrel 0x60
+    @pubcomp 0x70
+    @subscribe 0x80
+    @suback 0x90
+    @unsubscribe 0xA0
+    @unsuback 0xB0
+    @pingreq 0xC0
+    @pingresp 0xD0
+    @disconnect 0xE0
+
+
     def init(request, _state) do
         IO.inspect(request, label: "Websocket request")
       state = %{registry_key: request.path}
@@ -17,7 +33,6 @@ defmodule DriftMQ.SocketHandler do
     end
 
     def websocket_handle({:text, json}, state) do
-        IO.inspect(state, label: "handle")
       payload = Jason.decode!(json)
       message = payload["data"]["message"]
 
@@ -34,41 +49,55 @@ defmodule DriftMQ.SocketHandler do
     end
 
     def websocket_handle({:binary, packet}, state) do
-
-      decode_packet(packet)
-      payload = Jason.decode!("{}")
-      message = payload["data"]["message"]
-
-      Registry.DriftMQ
-      |> Registry.dispatch(state.registry_key, fn(entries) ->
-        for {pid, _} <- entries do
-          if pid != self() do
-            Process.send(pid, message, [])
-          end
-        end
-      end)
-
-      {:reply, {:binary, <<0::size(1)>>}, state}
+      with {command, _} <- decode_packet(packet) do
+        {response, state} = command
+          |> handle_request(state)
+        {:reply, response, state}
+      end
     end
 
+    defp handle_request(%{command: @connect} = _packet, state) do
+      {
+        {
+          :binary,
+          <<
+            @connack::big-integer-size(8),
+            2::big-integer-size(8),
+            1::big-integer-size(8),
+            0::big-integer-size(8)
+          >>
+        },
+        state
+      }
+    end
+
+    defp handle_request(%{command: @subscribe} = _packet, state) do
+      {
+        {
+          :binary,
+          <<
+            @connack::big-integer-size(8),
+            2::big-integer-size(8),
+            1::big-integer-size(8),
+            0::big-integer-size(8)
+          >>
+        },
+        state
+      }
+    end
 
     defp decode_packet(packet) do
-      struct = {%{}, packet}
+      {%{}, packet}
       |> command()
       |> remaining_length()
-      |> protocol_info()
-      |> flags()
-      |> keepalive()
-      |> client_details()
-      |> IO.inspect(label: "Decoded values 2")
-      struct
+      |> payload()
     end
 
     defp command({struct, <<command::little-integer-size(8), remaining::bitstring>>}) do
       {Map.put(struct, :command, command), remaining}
     end
 
-    defp remaining_length({%{command: 16} = struct, packet}) do
+    defp remaining_length({struct, packet}) do
       {remaining_length, remaining} = remaining_length_accumulate({0, packet}, 1)
       {Map.put(struct, :remaining_length, remaining_length), remaining}
     end
@@ -85,7 +114,7 @@ defmodule DriftMQ.SocketHandler do
       {current + multiplier * actual_size, rest}
     end
 
-    defp protocol_info({%{command: 16} = struct, <<protocol_length::big-integer-size(16), protocol_name::binary-size(protocol_length), protocol_version::big-integer-size(8), remaining::bitstring>>}) do
+    defp protocol_info({%{command: @connect} = struct, <<protocol_length::big-integer-size(16), protocol_name::binary-size(protocol_length), protocol_version::big-integer-size(8), remaining::bitstring>>}) do
       struct =
         Map.put(struct, :protocol_length, protocol_length)
         |> Map.put(:protocol, protocol_name)
@@ -93,22 +122,36 @@ defmodule DriftMQ.SocketHandler do
       {struct, remaining}
     end
 
-    defp flags({%{command: 16} = struct, <<connect_flags::big-integer-size(8), remaining::bitstring>>}) do
+    defp flags({%{command: @connect} = struct, <<connect_flags::big-integer-size(8), remaining::bitstring>>}) do
       struct =
         Map.put(struct, :connect_flags, connect_flags)
       {struct, remaining}
     end
 
-    defp keepalive({%{command: 16} = struct, <<keepalive::big-integer-size(16), remaining::bitstring>>}) do
+    defp keepalive({%{command: @connect} = struct, <<keepalive::big-integer-size(16), remaining::bitstring>>}) do
       struct =
         Map.put(struct, :keepalive, keepalive)
       {struct, remaining}
     end
 
-    defp client_details({%{command: 16} = struct, <<client_length::big-integer-size(16), client_id::binary-size(client_length), remaining::bitstring>>}) do
+    defp client_details({%{command: @connect} = struct, <<client_length::big-integer-size(16), client_id::binary-size(client_length), remaining::bitstring>>}) do
       struct =
         Map.put(struct, :client_id, client_id)
       {struct, remaining}
+    end
+
+    defp payload({%{remaining_length: _remaining_length} = struct, remaining_packet}) do
+      {Map.put(struct, :payload, remaining_packet), <<>>}
+      # case remaining_packet do
+      #   <<payload::bitstring-size(remaining_length)>> ->
+      #   asterisk ->
+      #     IO.inspect(asterisk)
+      #     :error
+      # end
+    end
+
+    defp handle_command() do
+
     end
 
     def websocket_info(info, state) do
