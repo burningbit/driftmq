@@ -1,4 +1,5 @@
 defmodule DriftMQ.SocketHandler do
+    use Bitwise
     @behaviour :cowboy_websocket
 
     @connect 0x10
@@ -8,7 +9,7 @@ defmodule DriftMQ.SocketHandler do
     @pubrec 0x50
     @pubrel 0x60
     @pubcomp 0x70
-    @subscribe 0x80
+    @subscribe 0x80 ||| 0x2
     @suback 0x90
     @unsubscribe 0xA0
     @unsuback 0xB0
@@ -56,7 +57,8 @@ defmodule DriftMQ.SocketHandler do
       end
     end
 
-    defp handle_request(%{command: @connect} = _packet, state) do
+    defp handle_request(%{command: @connect} = packet, state) do
+      IO.inspect(packet, label: "Connect")
       {
         {
           :binary,
@@ -71,7 +73,26 @@ defmodule DriftMQ.SocketHandler do
       }
     end
 
-    defp handle_request(%{command: @subscribe} = _packet, state) do
+    defp handle_request(%{command: @subscribe, payload: payload} = packet, state) do
+      IO.inspect(packet, label: "Subscribe")
+      {length, more_packet} = remaining_length_accumulate({0, payload}, 1) |> IO.inspect(label: "Subscribe remaining length")
+      remaining_length_accumulate({0, more_packet}, 1) |> IO.inspect(label: "Even more packet")
+      {
+        {
+          :binary,
+          <<
+            @connack::big-integer-size(8),
+            2::big-integer-size(8),
+            1::big-integer-size(8),
+            0::big-integer-size(8)
+          >>
+        },
+        state
+      }
+    end
+
+    defp handle_request(%{command: @publish} = _packet, state) do
+      IO.inspect("Publish")
       {
         {
           :binary,
